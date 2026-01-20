@@ -1,0 +1,11 @@
+services:
+  feishu-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: feishu-bot
+    env_file:
+      - .env
+    ports:
+      - "18080:8000"
+    restart: unless-stopped
