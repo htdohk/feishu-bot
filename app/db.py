@@ -104,32 +104,18 @@ async def get_or_create_settings(chat_id: str, default_threshold: float = 0.65) 
         return {"mode": "normal", "threshold": default_threshold}
     try:
         async with Session() as s:
-            try:
-                # 尝试查询所有列（包括新列）
-                q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
-                obj = q.scalar_one_or_none()
-                if obj:
-                    logger.debug(
-                        "get_or_create_settings existing chat_id=%s mode=%s threshold=%s",
-                        chat_id,
-                        obj.mode,
-                        obj.threshold,
-                    )
-                    return {"mode": obj.mode, "threshold": obj.threshold}
-            except Exception as e:
-                # 如果新列不存在，只查询旧列
-                logger.debug(f"Full query failed, falling back to basic columns: {e}")
-                await s.rollback()
-                # 创建新会话重试
-                async with Session() as s2:
-                    q = await s2.execute(
-                        select(Setting.chat_id, Setting.mode, Setting.threshold).where(Setting.chat_id == chat_id)
-                    )
-                    row = q.first()
-                    if row:
-                        return {"mode": row[1], "threshold": row[2]}
+            q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
+            obj = q.scalar_one_or_none()
+            if obj:
+                logger.debug(
+                    "get_or_create_settings existing chat_id=%s mode=%s threshold=%s",
+                    chat_id,
+                    obj.mode,
+                    obj.threshold,
+                )
+                return {"mode": obj.mode, "threshold": obj.threshold}
         
-        # 如果不存在，创建新的
+        # 如果不存在，创建新的（只设置基本列）
         async with Session() as s:
             obj = Setting(chat_id=chat_id, mode="normal", threshold=default_threshold)
             s.add(obj)

@@ -19,24 +19,6 @@ async def migrate_add_personality_columns():
     
     async with engine.begin() as conn:
         try:
-            # 检查 personality 列是否已存在
-            result = await conn.execute(
-                text("""
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name='settings' AND column_name='personality'
-                    )
-                """)
-            )
-            
-            column_exists = result.scalar()
-            if column_exists:
-                logger.info("Column 'personality' already exists, skipping migration")
-                return
-            
-            # 添加新列
-            logger.info("Adding personality columns to settings table...")
-            
             # 逐个添加列，避免一次性添加失败
             columns_to_add = [
                 ("personality", "VARCHAR(32) DEFAULT 'chill'"),
@@ -47,17 +29,18 @@ async def migrate_add_personality_columns():
             
             for col_name, col_def in columns_to_add:
                 try:
+                    # 使用 IF NOT EXISTS 语法（PostgreSQL 9.1+）
                     await conn.execute(
-                        text(f"ALTER TABLE settings ADD COLUMN {col_name} {col_def}")
+                        text(f"ALTER TABLE settings ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
                     )
                     logger.info(f"Added column {col_name}")
                 except Exception as e:
-                    # 如果列已存在，忽略错误
-                    if "already exists" in str(e) or "duplicate" in str(e).lower():
-                        logger.info(f"Column {col_name} already exists, skipping")
+                    # 如果列已存在或其他错误，记录但继续
+                    error_msg = str(e).lower()
+                    if "already exists" in error_msg or "duplicate" in error_msg or "column" in error_msg:
+                        logger.info(f"Column {col_name} already exists or migration skipped: {e}")
                     else:
-                        logger.error(f"Error adding column {col_name}: {e}")
-                        raise
+                        logger.warning(f"Error adding column {col_name}: {e}")
             
             logger.info("Migration completed successfully")
             

@@ -33,6 +33,22 @@ from .image_gen import (
 from .constants import (
     MSG_DRAWING,
     MSG_DRAW_SUCCESS,
+    SYSTEM_PROMPT_CHAT_ASSISTANT,
+    SYSTEM_PROMPT_PROACTIVE,
+    SYSTEM_PROMPT_SUMMARY,
+    SYSTEM_PROMPT_WELCOME,
+    PROMPT_TEMPLATE_CHAT,
+    PROMPT_TEMPLATE_PROACTIVE,
+    PROMPT_TEMPLATE_SUMMARY,
+    PROMPT_TEMPLATE_WELCOME,
+    MSG_THINKING,
+    MSG_NO_MESSAGES_FOR_SUMMARY,
+    MSG_WELCOME_PREFIX,
+    MSG_WELCOME_SUFFIX,
+    TEMPERATURE_CHAT,
+    TEMPERATURE_PROACTIVE,
+    TEMPERATURE_SUMMARY,
+    TEMPERATURE_WELCOME,
 )
 from .db import (
     init_db,
@@ -189,12 +205,7 @@ async def answer_when_mentioned(
     images: Optional[List[bytes]] = None,
     image_mimes: Optional[List[str]] = None,
 ):
-    system = (
-        "你是群聊助手，说话像人类、直接、不啰嗦。"
-        "输出要求：1) 先给结论/建议；2) 最多5条要点，每条不超20字；"
-        "3) 不要自夸/推销/寒暄，不要'如果你需要我还能...'；"
-        "4) 有图片就结合图片和文字给出具体改进。"
-    )
+    system = SYSTEM_PROMPT_CHAT_ASSISTANT
     
     # 检查是否需要联网搜索或获取网页内容
     web_context = ""
@@ -221,18 +232,17 @@ async def answer_when_mentioned(
                 logger.warning(f"Web search failed: {error}")
     
     # 构建最终提示词
-    prompt = f"群上下文：\n{context}"
+    prompt = PROMPT_TEMPLATE_CHAT.format(context=context, question=question)
     if web_context:
-        prompt += web_context
-    prompt += f"\n\n用户问题：{question}\n请用简短要点直接回答。"
+        prompt = f"群上下文：\n{context}{web_context}\n\n用户问题：{question}\n请用简短要点直接回答。"
     
     logger.debug(f"answer_when_mentioned chat_id={chat_id} question='{question[:80]}' web_context_len={len(web_context)}")
     if images:
         reply = await call_llm_with_images(
-            prompt, images=images, image_mimes=image_mimes, system=system, temperature=0.2
+            prompt, images=images, image_mimes=image_mimes, system=system, temperature=TEMPERATURE_CHAT
         )
     else:
-        reply = await call_llm(prompt, system, temperature=0.2)
+        reply = await call_llm(prompt, system, temperature=TEMPERATURE_CHAT)
     await send_text_to_chat(chat_id, reply)
     # 机器人回复也延长对话窗口
     mark_conversation_active(chat_id)
@@ -244,14 +254,8 @@ async def maybe_proactive_engage(chat_id: str, text: str, ctx: str, threshold: f
             f"maybe_proactive_engage triggered chat_id={chat_id} "
             f"score={score} threshold={threshold}"
         )
-        prompt = (
-            f"群上下文：\n{ctx}\n\n有人说：{text}\n"
-            f"请用口语化、极简要点回应："
-            f"1) 最多3条，每条不超20字；"
-            f"2) 不要客套/自夸/推销；"
-            f"3) 只说核心见解或下一步建议。"
-        )
-        reply = await call_llm(prompt, temperature=0.3)
+        prompt = PROMPT_TEMPLATE_PROACTIVE.format(context=ctx, text=text)
+        reply = await call_llm(prompt, SYSTEM_PROMPT_PROACTIVE, temperature=TEMPERATURE_PROACTIVE)
         await send_text_to_chat(chat_id, reply)
     else:
         logger.debug(
@@ -265,17 +269,12 @@ async def summarize_chat(chat_id: str, period: str = "weekly"):
         msgs = list(chat_logs[chat_id])
     if not msgs:
         logger.info(f"summarize_chat chat_id={chat_id} period={period} no messages")
-        await send_text_to_chat(chat_id, f"最近没有足够的消息用于{period}总结。")
+        await send_text_to_chat(chat_id, MSG_NO_MESSAGES_FOR_SUMMARY.format(period=period))
         return
-    system = "你是擅长做会议/群聊总结的助理。"
-    prompt = (
-        f"请对以下群聊做{period}总结：\n"
-        f"- 输出：主题Top N、关键结论/决定、待办与负责人、参考链接/原话片段、活跃度与情绪（可选）。\n"
-        f"- 语气客观，条理清晰。\n\n"
-        f"片段：\n{build_context_summary(msgs, limit=120)}"
-    )
+    system = SYSTEM_PROMPT_SUMMARY
+    prompt = PROMPT_TEMPLATE_SUMMARY.format(period=period, messages=build_context_summary(msgs, limit=120))
     logger.info(f"summarize_chat chat_id={chat_id} period={period} start LLM")
-    report = await call_llm(prompt, system, temperature=0.3)
+    report = await call_llm(prompt, system, temperature=TEMPERATURE_SUMMARY)
     await send_text_to_chat(chat_id, f"{period}总结：\n{report}")
 
 async def welcome_new_user(chat_id: str, new_user_name: str):
@@ -283,10 +282,10 @@ async def welcome_new_user(chat_id: str, new_user_name: str):
     if not msgs and chat_id in chat_logs:
         msgs = list(chat_logs[chat_id])[-80:]
     ctx = build_context_summary(msgs, limit=40)
-    prompt = (f"为新成员写一段40~80字的欢迎语，并附上过去两周群里讨论的主题关键词与一个开场建议。\n上下文示例：\n{ctx}")
+    prompt = PROMPT_TEMPLATE_WELCOME.format(context=ctx)
     logger.info(f"welcome_new_user chat_id={chat_id} name={new_user_name}")
-    text = await call_llm(prompt, temperature=0.5)
-    await send_text_to_chat(chat_id, f"欢迎 {new_user_name} 加入！\n{text}\n可使用 /help 查看指令。")
+    text = await call_llm(prompt, SYSTEM_PROMPT_WELCOME, temperature=TEMPERATURE_WELCOME)
+    await send_text_to_chat(chat_id, f"{MSG_WELCOME_PREFIX.format(name=new_user_name)}{text}{MSG_WELCOME_SUFFIX}")
 
 
 async def build_question_with_quote(event: dict, original_text: str) -> str:
