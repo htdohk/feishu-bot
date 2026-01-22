@@ -63,23 +63,96 @@ async def detect_user_intent(text: str, context: str = "") -> Dict[str, any]:
 
 返回 JSON 结果。"""
     
+    response = None
     try:
         response = await call_llm(user_prompt, system=system_prompt, temperature=0.1)
+        
+        # 检查响应是否为空
+        if not response or not response.strip():
+            logger.warning(f"detect_user_intent received empty response for text='{text[:50]}'")
+            return _get_default_intent_result()
         
         # 尝试解析 JSON
         import json
         result = json.loads(response)
         
+        # 验证返回的结果结构
+        if not isinstance(result, dict) or "intent" not in result:
+            logger.warning(f"detect_user_intent invalid result structure: {result}")
+            return _get_default_intent_result()
+        
         logger.debug(f"detect_user_intent text='{text[:50]}' intent={result.get('intent')} confidence={result.get('confidence')}")
         return result
+        
+    except json.JSONDecodeError as e:
+        # JSON 解析失败，尝试从响应中提取 JSON
+        if response:
+            extracted = _try_extract_json(response)
+            if extracted:
+                logger.debug(f"detect_user_intent extracted JSON from response for text='{text[:50]}'")
+                return extracted
+            logger.warning(f"detect_user_intent JSON parse error: {e}, response='{response[:300]}'")
+        else:
+            logger.warning(f"detect_user_intent JSON parse error: {e}, response is None or empty")
+        return _get_default_intent_result()
+        
     except Exception as e:
-        logger.warning(f"detect_user_intent parse error: {e}, response={response[:200] if 'response' in locals() else 'N/A'}")
-        # 降级处理：返回默认结果
-        return {
-            "intent": "chat",
-            "confidence": 0.5,
-            "details": {"description": "intent detection failed"}
-        }
+        logger.error(f"detect_user_intent unexpected error: {e}, response='{response[:300] if response else 'N/A'}'")
+        return _get_default_intent_result()
+
+
+def _try_extract_json(text: str) -> Optional[Dict]:
+    """
+    尝试从文本中提取 JSON 对象
+    """
+    import json
+    import re
+    
+    if not text:
+        return None
+    
+    # 尝试找到 JSON 对象的开始和结束
+    try:
+        # 方法1：直接查找 { 和 } 的匹配对
+        start_idx = text.find('{')
+        if start_idx == -1:
+            return None
+        
+        # 从 start_idx 开始，找到匹配的 }
+        brace_count = 0
+        end_idx = -1
+        for i in range(start_idx, len(text)):
+            if text[i] == '{':
+                brace_count += 1
+            elif text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    end_idx = i
+                    break
+        
+        if end_idx == -1:
+            return None
+        
+        json_str = text[start_idx:end_idx + 1]
+        result = json.loads(json_str)
+        
+        if isinstance(result, dict) and "intent" in result:
+            return result
+    except Exception as e:
+        logger.debug(f"_try_extract_json failed: {e}")
+    
+    return None
+
+
+def _get_default_intent_result() -> Dict[str, any]:
+    """
+    返回默认的意图识别结果
+    """
+    return {
+        "intent": "chat",
+        "confidence": 0.5,
+        "details": {"description": "intent detection failed"}
+    }
 
 
 async def should_respond_to_message(
