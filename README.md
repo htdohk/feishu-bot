@@ -37,10 +37,10 @@
 
 ### 调整命令
 除了语意发起的参数调整，也支持命令调整：
-> /help                     # 查看所有命令信息
-> /summary weekly           # 生成周报
-> /summary monthly          # 生成月报
-> /set threshold 0.5        # 设置主动发言阈值（0-1），默认0.5
+> /help                     # 查看所有命令信息<BR>
+> /summary weekly           # 生成周报<BR>
+> /summary monthly          # 生成月报<BR>
+> /set threshold 0.5        # 设置主动发言阈值（0-1），默认0.5<BR>
 > /help                     # 查看所有命令信息
 
 ## 🏗️ 项目构成
