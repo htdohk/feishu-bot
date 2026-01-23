@@ -2,11 +2,8 @@
 ## ✨ 项目概述
 本项目是一个基于飞书开放平台的机器人应用，集成了大语言模型（LLM）和多种功能模块。它主要通过飞书API与用户进行交互，并利用LLM实现智能对话。
 
-### Github地址
-> https://github.com/htdohk/feishu-bot
-
 ### 部署效果
-![feishu-bot.jpg](https://pan.htdo.hk/pd/public/feishu-bot.jpg)
+![feishu-bot](https://github.com/user-attachments/assets/239f3ec8-7381-42a8-b7ec-7ce766e90c12)
 
 ## 📖 主要功能
 ### 获取飞书消息
