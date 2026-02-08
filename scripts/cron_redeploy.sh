@@ -6,13 +6,15 @@ set -euo pipefail
 # - cron 执行：同样可用（无交互、带日志）
 # - 智能检测：自动判断是否需要忽略缓存重新构建
 #
-# 服务器项目路径（你服务器上是 /opt/feishu-bot）
-PROJECT_DIR="${PROJECT_DIR:-/opt/feishu-bot}"
+# 获取脚本所在目录，然后向上找到项目根目录（scripts/../）
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="${PROJECT_DIR:-$(dirname "${SCRIPT_DIR}")}"
+
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
 SERVICE_NAME="${SERVICE_NAME:-feishu-bot}"
 
-# 日志位置（建议宿主机持久化目录）
-LOG_DIR="${LOG_DIR:-/var/log/feishu-bot}"
+# 日志位置（相对于项目根目录）
+LOG_DIR="${LOG_DIR:-${PROJECT_DIR}/logs}"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/cron_redeploy.log}"
 
