@@ -128,17 +128,8 @@ LLM_ERROR_PARSE = "[LLM错误] 无法解析响应: {text}"
 LLM_ERROR_HTTP = "[LLM错误] {data}"
 LLM_ERROR_FORMAT = "[LLM错误] 响应格式异常: {data}"
 
-# 绘图相关
-DRAW_KEYWORDS = [
-    "画", "绘制", "生成", "生成图片", "生成一张", "画一张", "画个", "画出",
-    "帮我画", "给我画", "创作", "设计", "改成", "修改", "变成", "转换",
-    "draw", "generate", "generate image", "create image", "make image"
-]
-
-DRAW_REFERENCE_KEYWORDS = [
-    "参照", "参考", "基于", "根据", "仿照", "模仿", "类似",
-    "像这样", "这种风格", "按照", "依据"
-]
+# 绘图相关（已移至 semantic_intent.py 进行 LLM 分析）
+# 不再使用关键词匹配，改用 LLM 进行意图分类
 
 MSG_DRAWING = "正在绘制中，请稍候..."
 MSG_DRAW_SUCCESS = "图片已生成！"

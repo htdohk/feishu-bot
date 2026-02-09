@@ -42,29 +42,6 @@ async def get_tenant_access_token() -> str:
         return token
 
 
-def verify_url_challenge(body: dict):
-    if body.get("type") == "url_verification" and "challenge" in body:
-        logger.debug("verify_url_challenge hit")
-        return body["challenge"]
-    return None
-
-
-def verify_token(body: dict) -> bool:
-    header = body.get("header", {})
-    ok = (header.get("token") == VERIFICATION_TOKEN) or (
-        body.get("token") == VERIFICATION_TOKEN
-    )
-    if not ok:
-        logger.warning("verify_token failed header=%s body_token=%s",
-                       header.get("token"), body.get("token"))
-    return ok
-
-
-def parse_event(body: dict):
-    if "header" in body and "event" in body:
-        return body["header"].get("event_type", ""), body["event"]
-    return body.get("type", ""), body.get("event", {})
-
 
 def extract_plain_text(message_event: dict):
     message = message_event.get("message", {})
@@ -291,6 +268,70 @@ async def upload_image(image_bytes: bytes) -> Tuple[str, str]:
         
         logger.info(f"upload_image success, image_key={image_key}")
         return image_key, ""
+
+
+async def send_image_via_base64(chat_id: str, image_bytes: bytes, caption: str = ""):
+    """
+    通过 Base64 编码直接发送图片消息（富文本格式）
+    
+    Args:
+        chat_id: 群聊ID
+        image_bytes: 图片字节数据
+        caption: 图片说明文字（可选）
+    """
+    import base64
+    
+    if not image_bytes:
+        logger.error("send_image_via_base64: empty image_bytes")
+        return
+    
+    token = await get_tenant_access_token()
+    url = f"{LARK_API_BASE}/im/v1/messages?receive_id_type=chat_id"
+    
+    try:
+        # Base64 编码图片
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # 构建富文本消息（post 格式）
+        # 飞书支持在 post 消息中内嵌 Base64 图片
+        post_content = {
+            "zh_cn": {
+                "title": caption or "生成的图片",
+                "content": [
+                    [
+                        {
+                            "tag": "img",
+                            "image_key": "",  # 使用 base64 时可以为空
+                            "extra": {
+                                "image_type": "png",
+                                "original_url": f"data:image/png;base64,{image_base64}"
+                            }
+                        }
+                    ]
+                ]
+            }
+        }
+        
+        payload = {
+            "receive_id": chat_id,
+            "msg_type": "post",
+            "content": json.dumps({"post": post_content}, ensure_ascii=False),
+        }
+        
+        headers = {"Authorization": f"Bearer {token}"}
+        logger.debug(f"send_image_via_base64 chat_id={chat_id} image_size={len(image_bytes)} bytes")
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            data = r.json()
+            if data.get("code") != 0:
+                logger.error(f"send_image_via_base64 error: {data}")
+                return
+            
+            logger.info(f"send_image_via_base64 success chat_id={chat_id}")
+            
+    except Exception as e:
+        logger.error(f"send_image_via_base64 exception: {e}", exc_info=True)
 
 
 async def send_image_to_chat(chat_id: str, image_key: str, caption: str = ""):

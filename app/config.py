@@ -18,7 +18,6 @@ class Config:
     
     # 机器人配置
     BOT_NAME: str = os.getenv("BOT_NAME", "群助手")
-    BOT_USER_ID: str = os.getenv("BOT_USER_ID", "")
     
     # 数据库配置
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
@@ -28,6 +27,12 @@ class Config:
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
     LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "60"))
+    
+    # 小模型配置（用于快速意图分类）
+    SMALL_MODEL_BASE_URL: str = os.getenv("SMALL_MODEL_BASE_URL", "")
+    SMALL_MODEL_API_KEY: str = os.getenv("SMALL_MODEL_API_KEY", "")
+    SMALL_MODEL: str = os.getenv("SMALL_MODEL", "")
+    SMALL_MODEL_TIMEOUT: int = int(os.getenv("SMALL_MODEL_TIMEOUT", "30"))
     
     # 绘图模型配置
     IMAGE_MODEL_BASE_URL: str = os.getenv("IMAGE_MODEL_BASE_URL", "")

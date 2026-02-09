@@ -12,8 +12,6 @@ import httpx
 
 from .config import config
 from .constants import (
-    DRAW_KEYWORDS,
-    DRAW_REFERENCE_KEYWORDS,
     MSG_DRAW_NO_CONFIG,
     MSG_DRAW_ERROR,
     PROMPT_TEMPLATE_IMAGE_GEN,
@@ -28,17 +26,19 @@ def is_draw_request(text: str) -> bool:
     """
     判断文本是否包含绘图请求
     
+    NOTE: 此函数已弃用，改用 semantic_intent.classify_intent() 进行 LLM-based 分析
+    保留此函数仅作为备用，避免破坏兼容性
+    
     Args:
         text: 用户输入文本
         
     Returns:
-        是否为绘图请求
+        是否为绘图请求（使用 LLM 分析的结果）
     """
-    if not text:
-        return False
-    
-    text_lower = text.lower()
-    return any(keyword in text or keyword in text_lower for keyword in DRAW_KEYWORDS)
+    # 已移至 semantic_intent.classify_intent() 中进行 LLM 分析
+    # 此函数不再使用
+    logger.warning("is_draw_request() is deprecated, use semantic_intent.classify_intent() instead")
+    return False
 
 
 def has_reference_intent(text: str) -> bool:
@@ -54,7 +54,12 @@ def has_reference_intent(text: str) -> bool:
     if not text:
         return False
     
-    return any(keyword in text for keyword in DRAW_REFERENCE_KEYWORDS)
+    # 注：此函数已不再使用，改用 semantic_intent.classify_intent() 进行LLM分析
+    reference_keywords = [
+        "参照", "参考", "基于", "根据", "仿照", "模仿", "类似",
+        "像这样", "这种风格", "按照", "依据"
+    ]
+    return any(keyword in text for keyword in reference_keywords)
 
 
 def parse_size_from_text(text: str, reference_size: Optional[Tuple[int, int]] = None) -> Tuple[int, int]:

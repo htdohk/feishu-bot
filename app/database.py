@@ -1,3 +1,7 @@
+"""
+数据库管理模块
+合并了 db.py 和 migrations.py 的功能
+"""
 import os
 import time
 import logging
@@ -5,7 +9,7 @@ from typing import List, Dict
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
-from sqlalchemy import String, Float, Text
+from sqlalchemy import String, Float, Text, text
 from sqlalchemy import select, update
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -14,7 +18,7 @@ Base = declarative_base()
 engine = None
 Session = None
 
-logger = logging.getLogger("feishu_bot.db")
+logger = logging.getLogger("feishu_bot.database")
 
 
 class Message(Base):
@@ -31,13 +35,14 @@ class Setting(Base):
     chat_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     mode: Mapped[str] = mapped_column(String(16), default="normal")
     threshold: Mapped[float] = mapped_column(Float(), default=0.65)
-    personality: Mapped[str] = mapped_column(String(32), default="chill", nullable=True)  # chill/professional/humorous
-    language_style: Mapped[str] = mapped_column(String(32), default="casual", nullable=True)  # casual/formal/technical
-    response_length: Mapped[str] = mapped_column(String(16), default="normal", nullable=True)  # brief/normal/detailed
-    last_mention_time: Mapped[float] = mapped_column(Float(), default=0.0, nullable=True)  # 上一次 @bot 的时间戳
+    personality: Mapped[str] = mapped_column(String(32), default="chill", nullable=True)
+    language_style: Mapped[str] = mapped_column(String(32), default="casual", nullable=True)
+    response_length: Mapped[str] = mapped_column(String(16), default="normal", nullable=True)
+    last_mention_time: Mapped[float] = mapped_column(Float(), default=0.0, nullable=True)
 
 
 async def init_db():
+    """初始化数据库"""
     global engine, Session
     if not DATABASE_URL:
         logger.warning("DATABASE_URL not set, DB features disabled")
@@ -50,7 +55,42 @@ async def init_db():
     logger.info("init_db finished")
 
 
+async def run_migrations():
+    """运行数据库迁移"""
+    if not engine:
+        logger.warning("Database engine not initialized, skipping migration")
+        return
+    
+    try:
+        async with engine.begin() as conn:
+            # 添加新的列（如果还不存在）
+            columns_to_add = [
+                ("personality", "VARCHAR(32) DEFAULT 'chill'"),
+                ("language_style", "VARCHAR(32) DEFAULT 'casual'"),
+                ("response_length", "VARCHAR(16) DEFAULT 'normal'"),
+                ("last_mention_time", "FLOAT DEFAULT 0.0"),
+            ]
+            
+            for col_name, col_def in columns_to_add:
+                try:
+                    await conn.execute(
+                        text(f"ALTER TABLE settings ADD COLUMN IF NOT EXISTS {col_name} {col_def}")
+                    )
+                    logger.info(f"Added column {col_name}")
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if "already exists" in error_msg or "duplicate" in error_msg or "column" in error_msg:
+                        logger.info(f"Column {col_name} already exists, skipping")
+                    else:
+                        logger.warning(f"Error adding column {col_name}: {e}")
+        
+        logger.info("Migration completed successfully")
+    except Exception as e:
+        logger.error(f"Migration error: {e}")
+
+
 async def save_message_db(chat_id: str, user_id: str, text: str):
+    """保存消息到数据库"""
     if not DATABASE_URL:
         return
     from sqlalchemy.exc import SQLAlchemyError
@@ -76,6 +116,7 @@ async def save_message_db(chat_id: str, user_id: str, text: str):
 
 
 async def get_recent_messages(chat_id: str, limit: int = 50) -> List[Dict]:
+    """获取最近的消息"""
     if not DATABASE_URL:
         return []
     try:
@@ -100,6 +141,7 @@ async def get_recent_messages(chat_id: str, limit: int = 50) -> List[Dict]:
 
 
 async def get_or_create_settings(chat_id: str, default_threshold: float = 0.65) -> Dict:
+    """获取或创建群聊设置"""
     if not DATABASE_URL:
         return {"mode": "normal", "threshold": default_threshold}
     try:
@@ -115,7 +157,7 @@ async def get_or_create_settings(chat_id: str, default_threshold: float = 0.65) 
                 )
                 return {"mode": obj.mode, "threshold": obj.threshold}
         
-        # 如果不存在，创建新的（只设置基本列）
+        # 如果不存在，创建新的
         async with Session() as s:
             obj = Setting(chat_id=chat_id, mode="normal", threshold=default_threshold)
             s.add(obj)
@@ -133,6 +175,7 @@ async def get_or_create_settings(chat_id: str, default_threshold: float = 0.65) 
 
 
 async def update_settings_threshold(chat_id: str, value: float):
+    """更新阈值设置"""
     if not DATABASE_URL:
         return
     try:
@@ -149,7 +192,6 @@ async def update_settings_threshold(chat_id: str, value: float):
                 logger.debug(f"Query failed in update_settings_threshold: {e}")
                 await s.rollback()
         
-        # 如果查询失败或对象不存在，创建新会话重试
         async with Session() as s2:
             q = await s2.execute(select(Setting).where(Setting.chat_id == chat_id))
             obj = q.scalar_one_or_none()
@@ -165,6 +207,7 @@ async def update_settings_threshold(chat_id: str, value: float):
 
 
 async def update_settings_mode(chat_id: str, mode: str):
+    """更新模式设置"""
     if not DATABASE_URL:
         return
     try:
@@ -181,7 +224,6 @@ async def update_settings_mode(chat_id: str, mode: str):
                 logger.debug(f"Query failed in update_settings_mode: {e}")
                 await s.rollback()
         
-        # 如果查询失败或对象不存在，创建新会话重试
         async with Session() as s2:
             q = await s2.execute(select(Setting).where(Setting.chat_id == chat_id))
             obj = q.scalar_one_or_none()
@@ -197,6 +239,7 @@ async def update_settings_mode(chat_id: str, mode: str):
 
 
 async def list_chat_ids() -> List[str]:
+    """获取所有群聊ID"""
     if not DATABASE_URL:
         return []
     try:
@@ -225,7 +268,7 @@ async def update_settings_personality(chat_id: str, personality: str):
                     logger.info("update_settings_personality chat_id=%s personality=%s", chat_id, personality)
                     return
             except Exception as e:
-                logger.debug(f"Query failed in update_settings_personality: {e}")
+                logger.debug(f"Query failed: {e}")
                 await s.rollback()
         
         async with Session() as s2:
@@ -257,7 +300,7 @@ async def update_settings_language_style(chat_id: str, language_style: str):
                     logger.info("update_settings_language_style chat_id=%s style=%s", chat_id, language_style)
                     return
             except Exception as e:
-                logger.debug(f"Query failed in update_settings_language_style: {e}")
+                logger.debug(f"Query failed: {e}")
                 await s.rollback()
         
         async with Session() as s2:
@@ -289,7 +332,7 @@ async def update_settings_response_length(chat_id: str, response_length: str):
                     logger.info("update_settings_response_length chat_id=%s length=%s", chat_id, response_length)
                     return
             except Exception as e:
-                logger.debug(f"Query failed in update_settings_response_length: {e}")
+                logger.debug(f"Query failed: {e}")
                 await s.rollback()
         
         async with Session() as s2:
@@ -321,7 +364,7 @@ async def update_last_mention_time(chat_id: str, timestamp: float):
                     logger.debug("update_last_mention_time chat_id=%s timestamp=%s", chat_id, timestamp)
                     return
             except Exception as e:
-                logger.debug(f"Query failed in update_last_mention_time: {e}")
+                logger.debug(f"Query failed: {e}")
                 await s.rollback()
         
         async with Session() as s2:
