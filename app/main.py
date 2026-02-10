@@ -36,10 +36,10 @@ app = FastAPI()
 async def on_startup():
     """应用启动事件"""
     logger.info("FastAPI startup: init_db & migrations")
-    
+
     # 初始化数据库
     await init_db()
-    
+
     # 运行数据库迁移
     try:
         await run_migrations()
@@ -47,6 +47,19 @@ async def on_startup():
         logger.warning(
             f"Database migration failed (may be expected if columns already exist): {e}"
         )
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """应用关闭事件"""
+    logger.info("FastAPI shutdown: cleanup resources")
+
+    # 关闭 HTTP 客户端
+    try:
+        from .llm import close_http_client
+        await close_http_client()
+    except Exception as e:
+        logger.warning(f"Failed to close HTTP client: {e}")
 
 
 # 创建 webhook 处理器
@@ -70,10 +83,20 @@ async def feishu_events(request: Request):
     """
     飞书 Webhook 事件接收入口
     """
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception as e:
+        logger.error(f"Failed to parse request body: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
     try:
         result = await _webhook_handler(body)
         return JSONResponse(result)
+    except ValueError as e:
+        # 验证错误（如 token 验证失败）
+        logger.warning(f"Validation error: {e}")
+        raise HTTPException(status_code=403, detail="Validation failed")
     except Exception as e:
-        logger.error(f"webhook_handler error: {e}")
-        raise HTTPException(status_code=403, detail="invalid token")
+        # 其他未预期的错误
+        logger.error(f"Unexpected error in webhook_handler: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")

@@ -5,7 +5,7 @@
 import os
 import time
 import logging
-from typing import List, Dict
+from typing import Any
 
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
@@ -48,7 +48,17 @@ async def init_db():
         logger.warning("DATABASE_URL not set, DB features disabled")
         return
     logger.info("init_db creating engine for DATABASE_URL=%s", DATABASE_URL)
-    engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
+
+    # 优化的连接池配置
+    engine = create_async_engine(
+        DATABASE_URL,
+        echo=False,
+        pool_pre_ping=True,      # 连接前检查健康
+        pool_size=10,             # 连接池大小
+        max_overflow=20,          # 最大溢出连接数
+        pool_recycle=3600,        # 连接回收时间（1小时）
+        pool_timeout=30,          # 获取连接超时（秒）
+    )
     Session = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -115,7 +125,7 @@ async def save_message_db(chat_id: str, user_id: str, text: str):
         logger.error(f"[DB] save_message error: {e}")
 
 
-async def get_recent_messages(chat_id: str, limit: int = 50) -> List[Dict]:
+async def get_recent_messages(chat_id: str, limit: int = 50) -> list[dict]:
     """获取最近的消息"""
     if not DATABASE_URL:
         return []
@@ -140,7 +150,7 @@ async def get_recent_messages(chat_id: str, limit: int = 50) -> List[Dict]:
         return []
 
 
-async def get_or_create_settings(chat_id: str, default_threshold: float = 0.65) -> Dict:
+async def get_or_create_settings(chat_id: str, default_threshold: float = 0.65) -> dict:
     """获取或创建群聊设置"""
     if not DATABASE_URL:
         return {"mode": "normal", "threshold": default_threshold}
@@ -174,71 +184,55 @@ async def get_or_create_settings(chat_id: str, default_threshold: float = 0.65) 
         return {"mode": "normal", "threshold": default_threshold}
 
 
-async def update_settings_threshold(chat_id: str, value: float):
-    """更新阈值设置"""
+async def update_setting(chat_id: str, field: str, value: Any) -> bool:
+    """
+    通用的设置更新函数
+
+    Args:
+        chat_id: 群聊ID
+        field: 要更新的字段名
+        value: 新值
+
+    Returns:
+        是否更新成功
+    """
     if not DATABASE_URL:
-        return
+        return False
+
     try:
         async with Session() as s:
-            try:
-                q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
-                obj = q.scalar_one_or_none()
-                if obj:
-                    obj.threshold = value
-                    await s.commit()
-                    logger.info("update_settings_threshold chat_id=%s value=%s", chat_id, value)
-                    return
-            except Exception as e:
-                logger.debug(f"Query failed in update_settings_threshold: {e}")
-                await s.rollback()
-        
-        async with Session() as s2:
-            q = await s2.execute(select(Setting).where(Setting.chat_id == chat_id))
+            q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
             obj = q.scalar_one_or_none()
+
             if obj:
-                obj.threshold = value
+                # 更新现有记录
+                setattr(obj, field, value)
             else:
-                obj = Setting(chat_id=chat_id, threshold=value)
-                s2.add(obj)
-            await s2.commit()
-            logger.info("update_settings_threshold chat_id=%s value=%s", chat_id, value)
+                # 创建新记录
+                kwargs = {field: value}
+                obj = Setting(chat_id=chat_id, **kwargs)
+                s.add(obj)
+
+            await s.commit()
+            logger.info(f"update_setting chat_id={chat_id} field={field} value={value}")
+            return True
+
     except Exception as e:
-        logger.error(f"[DB] update_settings_threshold error: {e}")
+        logger.error(f"[DB] update_setting error: {e}")
+        return False
+
+
+async def update_settings_threshold(chat_id: str, value: float):
+    """更新阈值设置"""
+    return await update_setting(chat_id, "threshold", value)
 
 
 async def update_settings_mode(chat_id: str, mode: str):
     """更新模式设置"""
-    if not DATABASE_URL:
-        return
-    try:
-        async with Session() as s:
-            try:
-                q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
-                obj = q.scalar_one_or_none()
-                if obj:
-                    obj.mode = mode
-                    await s.commit()
-                    logger.info("update_settings_mode chat_id=%s mode=%s", chat_id, mode)
-                    return
-            except Exception as e:
-                logger.debug(f"Query failed in update_settings_mode: {e}")
-                await s.rollback()
-        
-        async with Session() as s2:
-            q = await s2.execute(select(Setting).where(Setting.chat_id == chat_id))
-            obj = q.scalar_one_or_none()
-            if obj:
-                obj.mode = mode
-            else:
-                obj = Setting(chat_id=chat_id, mode=mode)
-                s2.add(obj)
-            await s2.commit()
-            logger.info("update_settings_mode chat_id=%s mode=%s", chat_id, mode)
-    except Exception as e:
-        logger.error(f"[DB] update_settings_mode error: {e}")
+    return await update_setting(chat_id, "mode", mode)
 
 
-async def list_chat_ids() -> List[str]:
+async def list_chat_ids() -> list[str]:
     """获取所有群聊ID"""
     if not DATABASE_URL:
         return []
@@ -255,127 +249,19 @@ async def list_chat_ids() -> List[str]:
 
 async def update_settings_personality(chat_id: str, personality: str):
     """更新群聊性格设置"""
-    if not DATABASE_URL:
-        return
-    try:
-        async with Session() as s:
-            try:
-                q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
-                obj = q.scalar_one_or_none()
-                if obj:
-                    obj.personality = personality
-                    await s.commit()
-                    logger.info("update_settings_personality chat_id=%s personality=%s", chat_id, personality)
-                    return
-            except Exception as e:
-                logger.debug(f"Query failed: {e}")
-                await s.rollback()
-        
-        async with Session() as s2:
-            q = await s2.execute(select(Setting).where(Setting.chat_id == chat_id))
-            obj = q.scalar_one_or_none()
-            if obj:
-                obj.personality = personality
-            else:
-                obj = Setting(chat_id=chat_id, personality=personality)
-                s2.add(obj)
-            await s2.commit()
-            logger.info("update_settings_personality chat_id=%s personality=%s", chat_id, personality)
-    except Exception as e:
-        logger.error(f"[DB] update_settings_personality error: {e}")
+    return await update_setting(chat_id, "personality", personality)
 
 
 async def update_settings_language_style(chat_id: str, language_style: str):
     """更新群聊语言风格设置"""
-    if not DATABASE_URL:
-        return
-    try:
-        async with Session() as s:
-            try:
-                q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
-                obj = q.scalar_one_or_none()
-                if obj:
-                    obj.language_style = language_style
-                    await s.commit()
-                    logger.info("update_settings_language_style chat_id=%s style=%s", chat_id, language_style)
-                    return
-            except Exception as e:
-                logger.debug(f"Query failed: {e}")
-                await s.rollback()
-        
-        async with Session() as s2:
-            q = await s2.execute(select(Setting).where(Setting.chat_id == chat_id))
-            obj = q.scalar_one_or_none()
-            if obj:
-                obj.language_style = language_style
-            else:
-                obj = Setting(chat_id=chat_id, language_style=language_style)
-                s2.add(obj)
-            await s2.commit()
-            logger.info("update_settings_language_style chat_id=%s style=%s", chat_id, language_style)
-    except Exception as e:
-        logger.error(f"[DB] update_settings_language_style error: {e}")
+    return await update_setting(chat_id, "language_style", language_style)
 
 
 async def update_settings_response_length(chat_id: str, response_length: str):
     """更新群聊回复长度设置"""
-    if not DATABASE_URL:
-        return
-    try:
-        async with Session() as s:
-            try:
-                q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
-                obj = q.scalar_one_or_none()
-                if obj:
-                    obj.response_length = response_length
-                    await s.commit()
-                    logger.info("update_settings_response_length chat_id=%s length=%s", chat_id, response_length)
-                    return
-            except Exception as e:
-                logger.debug(f"Query failed: {e}")
-                await s.rollback()
-        
-        async with Session() as s2:
-            q = await s2.execute(select(Setting).where(Setting.chat_id == chat_id))
-            obj = q.scalar_one_or_none()
-            if obj:
-                obj.response_length = response_length
-            else:
-                obj = Setting(chat_id=chat_id, response_length=response_length)
-                s2.add(obj)
-            await s2.commit()
-            logger.info("update_settings_response_length chat_id=%s length=%s", chat_id, response_length)
-    except Exception as e:
-        logger.error(f"[DB] update_settings_response_length error: {e}")
+    return await update_setting(chat_id, "response_length", response_length)
 
 
 async def update_last_mention_time(chat_id: str, timestamp: float):
     """更新上一次 @bot 的时间戳"""
-    if not DATABASE_URL:
-        return
-    try:
-        async with Session() as s:
-            try:
-                q = await s.execute(select(Setting).where(Setting.chat_id == chat_id))
-                obj = q.scalar_one_or_none()
-                if obj:
-                    obj.last_mention_time = timestamp
-                    await s.commit()
-                    logger.debug("update_last_mention_time chat_id=%s timestamp=%s", chat_id, timestamp)
-                    return
-            except Exception as e:
-                logger.debug(f"Query failed: {e}")
-                await s.rollback()
-        
-        async with Session() as s2:
-            q = await s2.execute(select(Setting).where(Setting.chat_id == chat_id))
-            obj = q.scalar_one_or_none()
-            if obj:
-                obj.last_mention_time = timestamp
-            else:
-                obj = Setting(chat_id=chat_id, last_mention_time=timestamp)
-                s2.add(obj)
-            await s2.commit()
-            logger.debug("update_last_mention_time chat_id=%s timestamp=%s", chat_id, timestamp)
-    except Exception as e:
-        logger.error(f"[DB] update_last_mention_time error: {e}")
+    return await update_setting(chat_id, "last_mention_time", timestamp)

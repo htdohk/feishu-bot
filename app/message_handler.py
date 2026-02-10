@@ -1,13 +1,12 @@
 """
 消息处理模块 - 专注于消息分析、意图识别和内容生成
-合并了：消息处理、semantic_intent、message_heat 的逻辑
+重构版本：消除重复代码，使用 state_manager 管理状态
 """
 import asyncio
 import logging
-import json
-from typing import List, Optional, Dict, Any
-from collections import defaultdict, deque
+from typing import Optional
 
+from .config import config
 from .database import (
     save_message_db,
     get_recent_messages,
@@ -19,24 +18,23 @@ from .feishu_api import (
     get_message_text_by_id,
     get_message_image_bytes,
     send_text_to_chat,
-    send_image_to_chat,
-    upload_image,
 )
-from .image_gen import generate_image
+from .image_gen import handle_draw_request
 from .llm import call_llm, call_llm_with_images
-from .semantic_intent import (
-    detect_user_intent,
-    should_respond_to_message,
-    classify_intent,
-)
+from .semantic_intent import classify_intent
 from .web_search import (
     extract_urls_from_text,
     process_urls_in_context,
     should_use_web_search,
 )
+from .state_manager import (
+    mark_conversation_active,
+    is_conversation_active,
+    add_chat_log,
+    get_chat_logs,
+    build_context_summary,
+)
 from .constants import (
-    MSG_DRAWING,
-    MSG_DRAW_SUCCESS,
     MSG_THINKING,
     SYSTEM_PROMPT_CHAT_ASSISTANT,
     SYSTEM_PROMPT_PROACTIVE,
@@ -45,21 +43,8 @@ from .constants import (
     TEMPERATURE_CHAT,
     TEMPERATURE_PROACTIVE,
 )
-from .event_handler import (
-    mark_conversation_active,
-    is_conversation_active,
-    build_context_summary,
-    handle_event,
-)
 
 logger = logging.getLogger("feishu_bot.message_handler")
-
-# 内存日志存储（DB 异常时仍可运行）
-chat_logs: Dict[str, deque] = defaultdict(lambda: deque(maxlen=2000))
-
-# 全局配置
-BOT_NAME = "群助手"
-ENGAGE_DEFAULT = 0.65
 
 
 def basic_engage_score(text: str) -> float:
@@ -144,59 +129,6 @@ async def build_question_with_quote(event: dict, original_text: str) -> str:
         return original_text
 
 
-async def handle_draw_request(
-    chat_id: str,
-    text: str,
-    user_images: Optional[List[bytes]] = None
-):
-    """处理绘图请求"""
-    logger.info(
-        f"handle_draw_request chat_id={chat_id} text='{text[:80]}' "
-        f"has_ref_image={bool(user_images)}"
-    )
-    
-    # 发送"正在绘制"提示
-    await send_text_to_chat(chat_id, MSG_DRAWING)
-    
-    # 判断是否使用参考图片
-    reference_image = None
-    if user_images:
-        no_ref_keywords = ["不用参考", "不参考", "忽略图片", "不基于", "独立创作"]
-        has_no_ref_intent = any(kw in text for kw in no_ref_keywords)
-        
-        if not has_no_ref_intent:
-            reference_image = user_images[0]
-            logger.info(f"Using reference image, size={len(reference_image)} bytes")
-        else:
-            logger.info("User explicitly requested not to use reference image")
-    
-    # 生成图片
-    image_bytes, error = await generate_image(prompt=text, reference_image=reference_image)
-    
-    if error:
-        await send_text_to_chat(chat_id, error)
-        return
-    
-    if not image_bytes:
-        await send_text_to_chat(chat_id, "图片生成失败，请稍后重试")
-        return
-    
-    # 上传图片到飞书服务器，然后通过 image_key 发送
-    try:
-        image_key, upload_error = await upload_image(image_bytes)
-        if upload_error:
-            await send_text_to_chat(chat_id, f"图片上传失败: {upload_error}")
-            return
-        
-        if not image_key:
-            await send_text_to_chat(chat_id, "图片上传失败，请稍后重试")
-            return
-        
-        await send_image_to_chat(chat_id, image_key, MSG_DRAW_SUCCESS)
-        logger.info(f"Draw request completed successfully for chat_id={chat_id}")
-    except Exception as e:
-        logger.error(f"Failed to send generated image: {e}", exc_info=True)
-        await send_text_to_chat(chat_id, f"图片发送失败: {str(e)}")
 
 
 async def run_with_thinking(
@@ -231,19 +163,89 @@ async def run_with_thinking(
             pass
 
 
-async def answer_when_mentioned(
+async def handle_user_question(
+    chat_id: str,
+    question: str,
+    event: dict,
+    message_id: str,
+    image_keys: Optional[list[str]] = None,
+    enable_thinking: bool = True
+) -> None:
+    """
+    统一处理用户提问（被@或对话窗口内）
+
+    Args:
+        chat_id: 群聊ID
+        question: 用户问题
+        event: 消息事件
+        message_id: 消息ID
+        image_keys: 图片键列表
+        enable_thinking: 是否启用"思考中"提示
+    """
+    # 获取上下文
+    msgs = await get_recent_messages(chat_id, limit=config.MAX_CONTEXT_MESSAGES)
+    if not msgs:
+        msgs = get_chat_logs(chat_id, limit=config.MAX_CONTEXT_MESSAGES)
+    context = build_context_summary(msgs, limit=config.MAX_CONTEXT_MESSAGES)
+
+    # 处理引用/回复
+    question_with_quote = await build_question_with_quote(event, question)
+
+    # 获取图片
+    images: list[bytes] = []
+    mimes: list[str] = []
+    if image_keys and message_id:
+        for k in image_keys[:config.MAX_IMAGES_PER_MESSAGE]:
+            b, mime = await get_message_image_bytes(message_id, k)
+            if b:
+                images.append(b)
+                mimes.append(mime or "image/jpeg")
+
+    # 检查是否为绘图请求（使用LLM进行意图分类）
+    intent_result = await classify_intent(question, has_images=bool(images))
+    if intent_result.get("task_type") == "draw":
+        await handle_draw_request(chat_id, question, user_images=images or None)
+        mark_conversation_active(chat_id)
+        logger.info(f"Draw request handled: chat_id={chat_id} confidence={intent_result.get('confidence')}")
+        return
+
+    # 回答问题（可能带图片）
+    await run_with_thinking(
+        chat_id,
+        _answer_with_context(
+            chat_id,
+            question_with_quote,
+            context,
+            images=images or None,
+            image_mimes=mimes or None
+        ),
+        enable_thinking=enable_thinking and bool(images),
+    )
+    mark_conversation_active(chat_id)
+
+
+async def _answer_with_context(
     chat_id: str,
     question: str,
     context: str,
-    images: Optional[List[bytes]] = None,
-    image_mimes: Optional[List[str]] = None,
+    images: Optional[list[bytes]] = None,
+    image_mimes: Optional[list[str]] = None,
 ):
-    """被@时或在对话窗口内回答"""
+    """
+    基于上下文回答用户问题（内部辅助函数）
+
+    Args:
+        chat_id: 群聊ID
+        question: 用户问题
+        context: 群聊上下文
+        images: 图片列表
+        image_mimes: 图片MIME类型列表
+    """
     system = SYSTEM_PROMPT_CHAT_ASSISTANT
-    
+
     # 检查是否需要联网搜索或获取网页内容
     web_context = ""
-    
+
     # 1. 检查问题中是否有 URL
     urls = extract_urls_from_text(question)
     if urls:
@@ -253,14 +255,14 @@ async def answer_when_mentioned(
             web_context = "\n\n【网页内容】\n"
             for url, content in url_contents.items():
                 web_context += f"来自 {url}:\n{content[:1000]}\n\n"
-    
+
     # 2. 使用语义识别判断是否需要搜索实时信息
     if not web_context:
         needs_search = await should_use_web_search(question, context)
         if needs_search:
             logger.info(f"Web search needed: {question[:80]}")
             # 使用 web_search（如果需要）
-    
+
     # 构建最终提示词
     prompt = PROMPT_TEMPLATE_CHAT.format(context=context, question=question)
     if web_context:
@@ -268,12 +270,13 @@ async def answer_when_mentioned(
             f"群上下文：\n{context}{web_context}\n\n"
             f"用户问题：{question}\n请用简短要点直接回答。"
         )
-    
+
     logger.debug(
-        f"answer_when_mentioned chat_id={chat_id} question='{question[:80]}' "
+        f"_answer_with_context chat_id={chat_id} question='{question[:80]}' "
         f"web_context_len={len(web_context)}"
     )
-    
+
+    # 调用 LLM
     if images:
         reply = await call_llm_with_images(
             prompt,
@@ -284,9 +287,8 @@ async def answer_when_mentioned(
         )
     else:
         reply = await call_llm(prompt, system, temperature=TEMPERATURE_CHAT)
-    
+
     await send_text_to_chat(chat_id, reply)
-    mark_conversation_active(chat_id)
 
 
 async def maybe_proactive_engage(chat_id: str, text: str, ctx: str, threshold: float):
@@ -379,24 +381,18 @@ async def handle_message(event: dict, event_id: str):
             )
         
         await save_message_db(chat_id, user_id, text_for_store)
-        
-        ts = time.strftime("%m-%d %H:%M", time.localtime())
-        if chat_id not in chat_logs:
-            chat_logs[chat_id] = deque(maxlen=2000)
-        chat_logs[chat_id].append({"ts": ts, "user_id": user_id, "text": text_for_store})
-        
-        logger.debug(
-            f"append chat_logs chat_id={chat_id} "
-            f"len={len(chat_logs[chat_id])} ts={ts}"
-        )
+
+        # 添加到内存日志
+        add_chat_log(chat_id, user_id, text_for_store)
         
         # 检查是否为命令
         cmd_result = parse_command(text)
         if cmd_result:
             cmd, args = cmd_result
             logger.info(f"Command detected: {cmd} args={args}")
-            
+
             # 交由 event_handler 处理
+            from .event_handler import handle_event
             await handle_event(
                 event_type="command",
                 chat_id=chat_id,
@@ -405,49 +401,20 @@ async def handle_message(event: dict, event_id: str):
                 user_id=user_id,
             )
             return
-        
+
         # 被@情况
         if mentioned_bot(event):
             logger.info(
                 f"mentioned_bot=True chat_id={chat_id} user_id={user_id} "
                 f"text='{text[:80]}'"
             )
-            mark_conversation_active(chat_id)
-            
-            msgs = await get_recent_messages(chat_id, limit=20)
-            if not msgs and chat_id in chat_logs:
-                msgs = list(chat_logs[chat_id])[-20:]
-            ctx = build_context_summary(msgs, limit=20)
-            question = await build_question_with_quote(event, text_for_store)
-            
-            images: List[bytes] = []
-            mimes: List[str] = []
-            if image_keys and message_id:
-                for k in image_keys[:4]:
-                    b, mime = await get_message_image_bytes(message_id, k)
-                    if b:
-                        images.append(b)
-                        mimes.append(mime or "image/jpeg")
-            
-            # 检查是否为绘图请求（使用LLM进行意图分类）
-            intent_result = await classify_intent(text, has_images=bool(images))
-            if intent_result.get("task_type") == "draw":
-                await handle_draw_request(chat_id, text, user_images=images or None)
-                mark_conversation_active(chat_id)
-                logger.info(f"Draw request handled (LLM-classified): chat_id={chat_id} confidence={intent_result.get('confidence')}")
-                return
-            
-            # 回答
-            await run_with_thinking(
-                chat_id,
-                answer_when_mentioned(
-                    chat_id,
-                    question,
-                    ctx,
-                    images=images or None,
-                    image_mimes=mimes or None,
-                ),
-                enable_thinking=bool(images),
+            await handle_user_question(
+                chat_id=chat_id,
+                question=text_for_store,
+                event=event,
+                message_id=message_id,
+                image_keys=image_keys,
+                enable_thinking=True
             )
             return
         
@@ -457,7 +424,7 @@ async def handle_message(event: dict, event_id: str):
             and is_conversation_active(chat_id)
             and not mentions_someone_else(event)
         )
-        
+
         if in_sticky_conversation:
             logger.info(
                 "sticky_conversation=True chat_id=%s user_id=%s text='%s'",
@@ -465,51 +432,25 @@ async def handle_message(event: dict, event_id: str):
                 user_id,
                 text[:80],
             )
-            
+
             if should_zip_reply(text):
                 await send_text_to_chat(chat_id, "🤐")
                 mark_conversation_active(chat_id)
                 return
-            
-            msgs = await get_recent_messages(chat_id, limit=20)
-            if not msgs and chat_id in chat_logs:
-                msgs = list(chat_logs[chat_id])[-20:]
-            ctx = build_context_summary(msgs, limit=20)
-            question = await build_question_with_quote(event, text_for_store)
-            
-            images: List[bytes] = []
-            mimes: List[str] = []
-            if image_keys and message_id:
-                for k in image_keys[:4]:
-                    b, mime = await get_message_image_bytes(message_id, k)
-                    if b:
-                        images.append(b)
-                        mimes.append(mime or "image/jpeg")
-            
-            # 检查是否为绘图请求（使用LLM进行意图分类）
-            intent_result = await classify_intent(text, has_images=bool(images))
-            if intent_result.get("task_type") == "draw":
-                await handle_draw_request(chat_id, text, user_images=images or None)
-                mark_conversation_active(chat_id)
-                logger.info(f"Draw request handled (LLM-classified): chat_id={chat_id} confidence={intent_result.get('confidence')}")
-                return
-            
-            # 回答
-            await run_with_thinking(
-                chat_id,
-                answer_when_mentioned(
-                    chat_id,
-                    question,
-                    ctx,
-                    images=images or None,
-                    image_mimes=mimes or None,
-                ),
-                enable_thinking=bool(images),
+
+            # 使用统一的处理逻辑
+            await handle_user_question(
+                chat_id=chat_id,
+                question=text_for_store,
+                event=event,
+                message_id=message_id,
+                image_keys=image_keys,
+                enable_thinking=True
             )
             return
         
         # 主动模式
-        settings = await get_or_create_settings(chat_id, default_threshold=ENGAGE_DEFAULT)
+        settings = await get_or_create_settings(chat_id, default_threshold=config.ENGAGE_DEFAULT_THRESHOLD)
         if settings["mode"] != "quiet":
             thr = settings["threshold"]
             logger.debug(
@@ -517,8 +458,8 @@ async def handle_message(event: dict, event_id: str):
                 f"threshold={thr}"
             )
             msgs = await get_recent_messages(chat_id, limit=12)
-            if not msgs and chat_id in chat_logs:
-                msgs = list(chat_logs[chat_id])[-12:]
+            if not msgs:
+                msgs = get_chat_logs(chat_id, limit=12)
             ctx = build_context_summary(msgs, limit=12)
             await maybe_proactive_engage(chat_id, text, ctx, thr)
         else:

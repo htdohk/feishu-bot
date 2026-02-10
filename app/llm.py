@@ -1,6 +1,6 @@
 import logging
 import base64
-from typing import List, Optional
+from typing import Optional
 
 import httpx
 
@@ -15,6 +15,39 @@ from .constants import (
 )
 
 logger = logging.getLogger("feishu_bot.llm")
+
+# 全局 HTTP 客户端实例（用于复用连接）
+_http_client: Optional[httpx.AsyncClient] = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """
+    获取或创建全局 HTTP 客户端实例
+
+    Returns:
+        httpx.AsyncClient 实例
+    """
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=HTTP_TIMEOUT_LLM,
+            limits=httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=30.0
+            )
+        )
+        logger.debug("Created new HTTP client for LLM")
+    return _http_client
+
+
+async def close_http_client():
+    """关闭全局 HTTP 客户端"""
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None
+        logger.debug("Closed HTTP client for LLM")
 
 
 async def call_llm(prompt: str, system: str = "", temperature: float = 0.2) -> str:
@@ -48,23 +81,23 @@ async def call_llm(prompt: str, system: str = "", temperature: float = 0.2) -> s
         temperature,
         len(prompt),
     )
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_LLM) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-        try:
-            data = resp.json()
-        except Exception:
-            logger.error("call_llm parse json error resp_text=%s", resp.text[:200])
-            return LLM_ERROR_PARSE.format(text=resp.text[:200])
-        if resp.status_code >= 300:
-            logger.error("call_llm http error status=%s body=%s", resp.status_code, data)
-            return LLM_ERROR_HTTP.format(data=data)
-        try:
-            content = data["choices"][0]["message"]["content"]
-            logger.debug("call_llm success, content_len=%s", len(content))
-            return content
-        except Exception:
-            logger.error("call_llm response format error data=%s", data)
-            return LLM_ERROR_FORMAT.format(data=data)
+    client = get_http_client()
+    resp = await client.post(url, headers=headers, json=payload)
+    try:
+        data = resp.json()
+    except Exception:
+        logger.error("call_llm parse json error resp_text=%s", resp.text[:200])
+        return LLM_ERROR_PARSE.format(text=resp.text[:200])
+    if resp.status_code >= 300:
+        logger.error("call_llm http error status=%s body=%s", resp.status_code, data)
+        return LLM_ERROR_HTTP.format(data=data)
+    try:
+        content = data["choices"][0]["message"]["content"]
+        logger.debug("call_llm success, content_len=%s", len(content))
+        return content
+    except Exception:
+        logger.error("call_llm response format error data=%s", data)
+        return LLM_ERROR_FORMAT.format(data=data)
 
 
 def _image_data_url(image_bytes: bytes, mime: str) -> str:
@@ -80,8 +113,8 @@ def _image_data_url(image_bytes: bytes, mime: str) -> str:
 
 async def call_llm_with_images(
     prompt: str,
-    images: List[bytes],
-    image_mimes: Optional[List[str]] = None,
+    images: list[bytes],
+    image_mimes: Optional[list[str]] = None,
     system: str = "",
     temperature: float = 0.2,
 ) -> str:
@@ -132,26 +165,26 @@ async def call_llm_with_images(
         len(prompt),
         len(images),
     )
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_LLM) as client:
-        resp = await client.post(url, headers=headers, json=payload)
-        try:
-            data = resp.json()
-        except Exception:
-            logger.error(
-                "call_llm_with_images parse json error resp_text=%s", resp.text[:200]
-            )
-            return LLM_ERROR_PARSE.format(text=resp.text[:200])
-        if resp.status_code >= 300:
-            logger.error(
-                "call_llm_with_images http error status=%s body=%s",
-                resp.status_code,
-                data,
-            )
-            return LLM_ERROR_HTTP.format(data=data)
-        try:
-            content = data["choices"][0]["message"]["content"]
-            logger.debug("call_llm_with_images success, content_len=%s", len(content))
-            return content
-        except Exception:
-            logger.error("call_llm_with_images response format error data=%s", data)
-            return LLM_ERROR_FORMAT.format(data=data)
+    client = get_http_client()
+    resp = await client.post(url, headers=headers, json=payload)
+    try:
+        data = resp.json()
+    except Exception:
+        logger.error(
+            "call_llm_with_images parse json error resp_text=%s", resp.text[:200]
+        )
+        return LLM_ERROR_PARSE.format(text=resp.text[:200])
+    if resp.status_code >= 300:
+        logger.error(
+            "call_llm_with_images http error status=%s body=%s",
+            resp.status_code,
+            data,
+        )
+        return LLM_ERROR_HTTP.format(data=data)
+    try:
+        content = data["choices"][0]["message"]["content"]
+        logger.debug("call_llm_with_images success, content_len=%s", len(content))
+        return content
+    except Exception:
+        logger.error("call_llm_with_images response format error data=%s", data)
+        return LLM_ERROR_FORMAT.format(data=data)

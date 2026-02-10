@@ -5,7 +5,7 @@
 import logging
 import base64
 import re
-from typing import Optional, Tuple, List
+from typing import Optional
 from io import BytesIO
 
 import httpx
@@ -14,6 +14,8 @@ from .config import config
 from .constants import (
     MSG_DRAW_NO_CONFIG,
     MSG_DRAW_ERROR,
+    MSG_DRAWING,
+    MSG_DRAW_SUCCESS,
     PROMPT_TEMPLATE_IMAGE_GEN,
     PROMPT_TEMPLATE_IMAGE_TO_IMAGE,
     IMAGE_SIZE_PRESETS,
@@ -62,7 +64,7 @@ def has_reference_intent(text: str) -> bool:
     return any(keyword in text for keyword in reference_keywords)
 
 
-def parse_size_from_text(text: str, reference_size: Optional[Tuple[int, int]] = None) -> Tuple[int, int]:
+def parse_size_from_text(text: str, reference_size: Optional[tuple[int, int]] = None) -> tuple[int, int]:
     """
     从文本中解析图片尺寸
     
@@ -189,8 +191,8 @@ def _convert_size_to_aspect_ratio(width: int, height: int) -> str:
 async def generate_image(
     prompt: str,
     reference_image: Optional[bytes] = None,
-    size: Optional[Tuple[int, int]] = None
-) -> Tuple[Optional[bytes], Optional[str]]:
+    size: Optional[tuple[int, int]] = None
+) -> tuple[Optional[bytes], Optional[str]]:
     """
     生成图片（使用 chat.completions 接口）
     
@@ -343,3 +345,67 @@ async def generate_image(
         error_msg = str(e)
         logger.error(f"Image generation error: {e}", exc_info=True)
         return None, MSG_DRAW_ERROR.format(error=error_msg)
+
+
+async def handle_draw_request(
+    chat_id: str,
+    text: str,
+    user_images: Optional[list[bytes]] = None
+) -> None:
+    """
+    处理绘图请求（完整流程）
+
+    Args:
+        chat_id: 群聊ID
+        text: 用户输入文本
+        user_images: 用户上传的图片列表
+    """
+    from .feishu_api import send_text_to_chat, send_image_to_chat, upload_image
+
+    logger.info(
+        f"handle_draw_request chat_id={chat_id} text='{text[:80]}' "
+        f"has_ref_image={bool(user_images)}"
+    )
+
+    # 发送"正在绘制"提示
+    await send_text_to_chat(chat_id, MSG_DRAWING)
+
+    # 判断是否使用参考图片
+    reference_image = None
+    if user_images:
+        no_ref_keywords = ["不用参考", "不参考", "忽略图片", "不基于", "独立创作"]
+        has_no_ref_intent = any(kw in text for kw in no_ref_keywords)
+
+        if not has_no_ref_intent:
+            reference_image = user_images[0]
+            logger.info(f"Using reference image, size={len(reference_image)} bytes")
+        else:
+            logger.info("User explicitly requested not to use reference image")
+
+    # 生成图片
+    image_bytes, error = await generate_image(prompt=text, reference_image=reference_image)
+
+    if error:
+        await send_text_to_chat(chat_id, error)
+        return
+
+    if not image_bytes:
+        await send_text_to_chat(chat_id, "图片生成失败，请稍后重试")
+        return
+
+    # 上传图片到飞书服务器，然后通过 image_key 发送
+    try:
+        image_key, upload_error = await upload_image(image_bytes)
+        if upload_error:
+            await send_text_to_chat(chat_id, f"图片上传失败: {upload_error}")
+            return
+
+        if not image_key:
+            await send_text_to_chat(chat_id, "图片上传失败，请稍后重试")
+            return
+
+        await send_image_to_chat(chat_id, image_key, MSG_DRAW_SUCCESS)
+        logger.info(f"Draw request completed successfully for chat_id={chat_id}")
+    except Exception as e:
+        logger.error(f"Failed to send generated image: {e}", exc_info=True)
+        await send_text_to_chat(chat_id, f"图片发送失败: {str(e)}")

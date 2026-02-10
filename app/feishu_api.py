@@ -2,7 +2,7 @@ import os
 import json
 import time
 import logging
-from typing import List, Tuple, Dict, Any
+from typing import Any
 
 import httpx
 from fastapi import HTTPException
@@ -57,7 +57,7 @@ def extract_plain_text(message_event: dict):
     return chat_id, sender_id, text
 
 
-def extract_message_payload(message_event: dict) -> Tuple[str, str, str, List[str], str]:
+def extract_message_payload(message_event: dict) -> tuple[str, str, str, list[str], str]:
     """
     提取消息的核心信息：
     - chat_id, sender_id
@@ -83,7 +83,7 @@ def extract_message_payload(message_event: dict) -> Tuple[str, str, str, List[st
         content = {}
 
     text = ""
-    image_keys: List[str] = []
+    image_keys: list[str] = []
 
     if isinstance(content, dict):
         # text 消息
@@ -103,7 +103,7 @@ def extract_message_payload(message_event: dict) -> Tuple[str, str, str, List[st
         # post 富文本：
         # 1）有语言包装：{"zh_cn": {"title": "...", "content": [...]}}
         # 2）无语言包装：{"title": "...", "content": [...]}
-        def _parse_post_lang_obj(lang_obj: Dict[str, Any]):
+        def _parse_post_lang_obj(lang_obj: dict[str, Any]):
             nonlocal text, image_keys
             if not isinstance(lang_obj, dict):
                 return
@@ -111,7 +111,7 @@ def extract_message_payload(message_event: dict) -> Tuple[str, str, str, List[st
             if title_inner:
                 text = (text + "\n" + title_inner).strip() if text else title_inner
             blocks = lang_obj.get("content") or []
-            texts_local: List[str] = []
+            texts_local: list[str] = []
             try:
                 for para in blocks:
                     if not isinstance(para, list):
@@ -222,7 +222,7 @@ async def send_text_to_chat(chat_id: str, text: str):
             logger.error("[send_text_to_chat] error: %s", data)
 
 
-async def upload_image(image_bytes: bytes) -> Tuple[str, str]:
+async def upload_image(image_bytes: bytes) -> tuple[str, str]:
     """
     上传图片到飞书，获取 image_key
     
@@ -408,7 +408,7 @@ async def get_message_text_by_id(message_id: str) -> str:
     return text
 
 
-async def get_message_image_bytes(message_id: str, image_key: str) -> Tuple[bytes, str]:
+async def get_message_image_bytes(message_id: str, image_key: str) -> tuple[bytes, str]:
     """
     按“获取消息中的资源文件”规范，通过 message_id + image_key 拉取消息里的图片。
     接口：GET /open-apis/im/v1/messages/:message_id/resources/:file_key?type=image
